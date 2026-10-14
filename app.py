@@ -3,6 +3,8 @@ AFC Wimbledon U16 - Match Dashboard
 Run with:  streamlit run app.py
 """
 
+import base64
+import html
 import json
 import uuid
 from datetime import date
@@ -25,7 +27,10 @@ CREDIT = "@Neil_barretto"
 DATA_DIR = Path("data")
 XML_DIR = DATA_DIR / "xml"
 DB_PATH = DATA_DIR / "games.json"
+ASSETS_DIR = Path("assets")
+OPP_LOGO_DIR = ASSETS_DIR / "opponents"
 XML_DIR.mkdir(parents=True, exist_ok=True)
+OPP_LOGO_DIR.mkdir(parents=True, exist_ok=True)
 
 st.set_page_config(page_title=f"{CLUB} Match Dashboard", page_icon="⚽", layout="wide")
 
@@ -37,6 +42,39 @@ st.markdown(
       [data-testid="stSidebar"] {{ background: {charts.NAVY}; }}
       [data-testid="stSidebar"] * {{ color: white !important; }}
       [data-testid="stMetricValue"] {{ color: {charts.NAVY}; }}
+
+      /* ---- scoreboard ---- */
+      .scoreboard {{ display:flex; align-items:center; justify-content:center; gap:2.5rem;
+                     background:linear-gradient(135deg,{charts.NAVY} 0%,#143059 100%);
+                     border-radius:18px; padding:1.6rem 1rem; margin:0.5rem 0 0.4rem 0; }}
+      .sb-team {{ display:flex; flex-direction:column; align-items:center; gap:.6rem; width:220px; text-align:center; }}
+      .sb-name {{ color:white; font-weight:700; font-size:1.1rem; line-height:1.2; }}
+      .sb-score {{ display:flex; align-items:center; gap:1rem; color:{charts.GOLD};
+                   font-size:4rem; font-weight:800; letter-spacing:.05em; }}
+      .sb-dash {{ color:white; opacity:.5; font-weight:400; }}
+      .crest {{ width:84px; height:84px; object-fit:contain; }}
+      .crest-fallback {{ display:flex; align-items:center; justify-content:center; border-radius:50%;
+                         background:rgba(255,255,255,.1); color:white; font-weight:800; font-size:1.4rem; }}
+      .sb-meta {{ text-align:center; color:#6B7280; font-size:.9rem; margin-bottom:1rem; }}
+
+      /* ---- stat comparison card ---- */
+      .stats-card {{ background:{charts.NAVY}; border-radius:18px; padding:1.2rem 1.6rem 1.4rem 1.6rem; }}
+      .stats-head {{ display:flex; justify-content:space-between; font-weight:800; letter-spacing:.08em;
+                     font-size:.85rem; margin-bottom:.4rem; }}
+      .stats-head .l {{ color:{charts.GOLD}; }}
+      .stats-head .r {{ color:{charts.BLUE_GREY}; }}
+      .stat-row {{ padding:.55rem 0 .35rem 0; border-bottom:1px solid rgba(255,255,255,.07); }}
+      .stat-row:last-child {{ border-bottom:none; }}
+      .stat-line {{ display:grid; grid-template-columns:1fr 1.7fr 1fr; align-items:center; }}
+      .stat-label {{ text-align:center; color:#CBD5E1; font-weight:600; font-size:.95rem; }}
+      .stat-val {{ color:white; font-weight:700; font-size:1rem; }}
+      .stat-val.left {{ justify-self:start; }}
+      .stat-val.right {{ justify-self:end; }}
+      .pill-t {{ background:{charts.GOLD}; color:{charts.NAVY}; border-radius:999px; padding:.15rem .9rem; }}
+      .pill-o {{ background:{charts.BLUE_GREY}; color:white; border-radius:999px; padding:.15rem .9rem; }}
+      .split {{ display:flex; height:4px; border-radius:4px; overflow:hidden; margin-top:.5rem; gap:3px; }}
+      .split-t {{ background:{charts.GOLD}; border-radius:4px; }}
+      .split-o {{ background:{charts.BLUE_GREY}; border-radius:4px; }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -97,6 +135,81 @@ def game_label(game):
 
 
 # ============================================================
+# LOGOS + HTML COMPONENTS
+# ============================================================
+def b64_uri(path):
+    mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+            ".webp": "image/webp", ".svg": "image/svg+xml"}.get(path.suffix.lower(), "image/png")
+    return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode()}"
+
+
+def club_logo_uri():
+    """Looks for assets/logo.png (or .jpg/.jpeg/.webp/.svg)."""
+    for ext in ("png", "jpg", "jpeg", "webp", "svg"):
+        p = ASSETS_DIR / f"logo.{ext}"
+        if p.exists():
+            return b64_uri(p)
+    return None
+
+
+def opp_logo_uri(game):
+    f = game.get("opp_logo")
+    if f and (OPP_LOGO_DIR / f).exists():
+        return b64_uri(OPP_LOGO_DIR / f)
+    return None
+
+
+def crest_html(uri, fallback_text):
+    if uri:
+        return f'<img class="crest" src="{uri}">'
+    return f'<div class="crest crest-fallback">{html.escape(fallback_text[:3].upper())}</div>'
+
+
+def scoreboard_html(game, gf, ga):
+    age = game.get("age_group", AGE_GROUP_DEFAULT)
+    return (
+        '<div class="scoreboard">'
+        f'<div class="sb-team">{crest_html(club_logo_uri(), TEAM_SHORT)}<div class="sb-name">{html.escape(CLUB)} {html.escape(age)}</div></div>'
+        f'<div class="sb-score"><span>{gf}</span><span class="sb-dash">-</span><span>{ga}</span></div>'
+        f'<div class="sb-team">{crest_html(opp_logo_uri(game), game["opponent"])}<div class="sb-name">{html.escape(game["opponent"])}</div></div>'
+        '</div>'
+    )
+
+
+def stats_card_html(game, summ):
+    t, o = summ["team"], summ["opp"]
+
+    def acc(s):
+        return round(100 * s["Shots on target"] / s["Total shots"]) if s["Total shots"] else 0
+
+    rows = [
+        ("Goals", t["Goals"], o["Goals"], str(t["Goals"]), str(o["Goals"])),
+        ("Total shots", t["Total shots"], o["Total shots"], str(t["Total shots"]), str(o["Total shots"])),
+        ("Shots on target", t["Shots on target"], o["Shots on target"], str(t["Shots on target"]), str(o["Shots on target"])),
+        ("Shots off target", t["Shots off target"], o["Shots off target"], str(t["Shots off target"]), str(o["Shots off target"])),
+        ("Shots blocked", t["Shots blocked"], o["Shots blocked"], str(t["Shots blocked"]), str(o["Shots blocked"])),
+        ("Shot accuracy", acc(t), acc(o), f"{acc(t)}%", f"{acc(o)}%"),
+        ("Penalty box entries", t["Penalty box entries"], o["Penalty box entries"], str(t["Penalty box entries"]), str(o["Penalty box entries"])),
+        ("Final third entries", t["Final third entries"], o["Final third entries"], str(t["Final third entries"]), str(o["Final third entries"])),
+    ]
+    out = [f'<div class="stats-card"><div class="stats-head"><span class="l">{TEAM_SHORT}</span>'
+           f'<span class="r">{html.escape(game["opponent"]).upper()}</span></div>']
+    for label, tv, ov, td, od in rows:
+        lcls = "stat-val left" + (" pill-t" if tv > ov else "")
+        rcls = "stat-val right" + (" pill-o" if ov > tv else "")
+        total = tv + ov
+        pct = 100 * tv / total if total else 50
+        out.append(
+            '<div class="stat-row"><div class="stat-line">'
+            f'<span class="{lcls}">{td}</span><span class="stat-label">{label}</span><span class="{rcls}">{od}</span>'
+            f'</div><div class="split"><div class="split-t" style="width:{pct:.1f}%"></div>'
+            f'<div class="split-o" style="width:{100 - pct:.1f}%"></div></div></div>'
+        )
+    out.append("</div>")
+    return "".join(out)
+
+
+# ============================================================
 # PAGE: MATCH CENTRE
 # ============================================================
 def page_match_centre():
@@ -112,21 +225,16 @@ def page_match_centre():
     gf, ga = summ["team"]["Goals"], summ["opp"]["Goals"]
     age = game.get("age_group", AGE_GROUP_DEFAULT)
 
-    st.header(f"{CLUB} {age}  {gf} - {ga}  {game['opponent']}")
+    st.markdown(scoreboard_html(game, gf, ga), unsafe_allow_html=True)
     bits = [game["date"], game.get("competition"), game.get("venue")]
-    st.caption("  •  ".join(b for b in bits if b))
+    st.markdown(f'<div class="sb-meta">{"  •  ".join(html.escape(b) for b in bits if b)}</div>', unsafe_allow_html=True)
     if game.get("notes"):
-        st.write(game["notes"])
+        st.caption(game["notes"])
 
-    # headline metrics
-    cols = st.columns(4)
-    for col, stat in zip(cols, ["Total shots", "Shots on target", "Penalty box entries", "Final third entries"]):
-        t, o = summ["team"][stat], summ["opp"][stat]
-        col.metric(stat, f"{t} vs {o}", delta=t - o)
-
-    # full comparison table
-    df = pd.DataFrame({TEAM_SHORT: summ["team"], game["opponent"]: summ["opp"]})
-    st.dataframe(df, width="stretch")
+    st.markdown(stats_card_html(game, summ), unsafe_allow_html=True)
+    with st.expander("Full stats table"):
+        st.dataframe(pd.DataFrame({TEAM_SHORT: summ["team"], game["opponent"]: summ["opp"]}), width="stretch")
+    st.write("")
 
     ctx = match_ctx(game)
     pngs = render_cached(xml_bytes_for(game), json.dumps(game["codes"], sort_keys=True), json.dumps(ctx))
@@ -173,6 +281,8 @@ def page_match_centre():
         if st.checkbox("Yes, delete this game permanently", key=f"del_chk_{game['id']}"):
             if st.button("Delete", type="primary", key=f"del_btn_{game['id']}"):
                 (XML_DIR / game["xml_file"]).unlink(missing_ok=True)
+                if game.get("opp_logo"):
+                    (OPP_LOGO_DIR / game["opp_logo"]).unlink(missing_ok=True)
                 save_games([g for g in load_games() if g["id"] != game["id"]])
                 st.cache_data.clear()
                 st.rerun()
@@ -257,6 +367,7 @@ def page_add_game():
         age_group = c5.text_input("Age group", value=AGE_GROUP_DEFAULT)
         notes = st.text_area("Notes (optional)", height=80)
         xml_file = st.file_uploader("Sportscode XML *", type=["xml"])
+        opp_logo_file = st.file_uploader("Opponent crest (optional)", type=["png", "jpg", "jpeg", "webp"])
 
         with st.expander("Sportscode code names (only change if your XML uses different names)"):
             codes = {}
@@ -297,6 +408,10 @@ def page_add_game():
         "competition": competition, "venue": venue, "age_group": age_group.strip() or AGE_GROUP_DEFAULT,
         "notes": notes.strip(), "xml_file": fname, "codes": codes,
     })
+    if opp_logo_file is not None:
+        logo_name = f"{game_id}{Path(opp_logo_file.name).suffix.lower()}"
+        (OPP_LOGO_DIR / logo_name).write_bytes(opp_logo_file.getvalue())
+        games[-1]["opp_logo"] = logo_name
     save_games(games)
     st.cache_data.clear()
 
@@ -312,7 +427,10 @@ def page_add_game():
 # ============================================================
 # ROUTER
 # ============================================================
-st.sidebar.title(f"⚽ {CLUB}")
+_logo = club_logo_uri()
+if _logo:
+    st.sidebar.markdown(f'<img src="{_logo}" style="width:90px;margin-bottom:.5rem">', unsafe_allow_html=True)
+st.sidebar.title(CLUB)
 st.sidebar.caption(f"{AGE_GROUP_DEFAULT} match analysis")
 page = st.sidebar.radio("Navigate", ["Match Centre", "Season Overview", "Add Game"], label_visibility="collapsed")
 {"Match Centre": page_match_centre, "Season Overview": page_season, "Add Game": page_add_game}[page]()
