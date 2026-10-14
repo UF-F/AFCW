@@ -4,6 +4,7 @@ Run with:  streamlit run app.py
 """
 
 import base64
+import hmac
 import html
 import json
 import uuid
@@ -14,6 +15,7 @@ import pandas as pd
 import streamlit as st
 
 import charts
+import storage
 
 # ============================================================
 # SETTINGS - change these once
@@ -24,13 +26,8 @@ TEAM_NAME = "Wimbledon"      # used on the infographics
 AGE_GROUP_DEFAULT = "U16"
 CREDIT = "@Neil_barretto"
 
-DATA_DIR = Path("data")
-XML_DIR = DATA_DIR / "xml"
-DB_PATH = DATA_DIR / "games.json"
-ASSETS_DIR = Path("assets")
-OPP_LOGO_DIR = ASSETS_DIR / "opponents"
-XML_DIR.mkdir(parents=True, exist_ok=True)
-OPP_LOGO_DIR.mkdir(parents=True, exist_ok=True)
+BASE_DIR = Path(__file__).resolve().parent  # always next to app.py, wherever you launch from
+ASSETS_DIR = BASE_DIR / "assets"   # club logo lives here (committed with the app)
 
 st.set_page_config(page_title=f"{CLUB} Match Dashboard", page_icon="⚽", layout="wide")
 
@@ -41,7 +38,21 @@ st.markdown(
       h1, h2, h3 {{ color: {charts.NAVY}; }}
       [data-testid="stSidebar"] {{ background: {charts.NAVY}; }}
       [data-testid="stSidebar"] * {{ color: white !important; }}
-      [data-testid="stMetricValue"] {{ color: {charts.NAVY}; }}
+      [data-testid="stMetric"] {{ background:{charts.NAVY}; border-radius:14px; padding:.9rem 1.1rem; }}
+      [data-testid="stMetricValue"], [data-testid="stMetricValue"] * {{ color:white !important; }}
+      [data-testid="stMetricLabel"], [data-testid="stMetricLabel"] * {{ color:#CBD5E1 !important; }}
+
+      /* ---- sidebar navigation ---- */
+      [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] {{
+          background:transparent; border:1px solid transparent; justify-content:flex-start;
+          padding:.55rem .9rem; border-radius:10px; }}
+      [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"]:hover {{
+          background:rgba(255,255,255,.10); border-color:transparent; }}
+      [data-testid="stSidebar"] [data-testid="stBaseButton-primary"] {{
+          background:{charts.GOLD}; border:1px solid {charts.GOLD}; justify-content:flex-start;
+          padding:.55rem .9rem; border-radius:10px; }}
+      [data-testid="stSidebar"] [data-testid="stBaseButton-primary"] * {{
+          color:{charts.NAVY} !important; font-weight:700; }}
 
       /* ---- scoreboard ---- */
       .scoreboard {{ display:flex; align-items:center; justify-content:center; gap:2.5rem;
@@ -82,20 +93,54 @@ st.markdown(
 
 
 # ============================================================
-# STORAGE (games.json + one XML file per game)
+# STORAGE - private GitHub repo on Streamlit Cloud, local folder otherwise
 # ============================================================
+def _make_store():
+    try:
+        cfg = st.secrets["github"]
+    except Exception:  # noqa: BLE001  (no secrets configured -> run locally)
+        return storage.LocalStorage(BASE_DIR / "data")
+    try:
+        return storage.GitHubStorage(cfg["token"], cfg["repo"], cfg.get("branch", "main"), cfg.get("folder", ""))
+    except KeyError as e:
+        st.error(f"Your [github] secrets are missing {e}. They need at least `token` and `repo`.")
+        st.stop()
+
+
+store = _make_store()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def storage_status():
+    return store.check()
+
+
+@st.cache_data(show_spinner=False, ttl=600)
 def load_games():
-    if DB_PATH.exists():
-        return json.loads(DB_PATH.read_text())
-    return []
+    raw = store.read("games.json")
+    return json.loads(raw) if raw else []
 
 
 def save_games(games):
-    DB_PATH.write_text(json.dumps(games, indent=2))
+    store.write("games.json", json.dumps(games, indent=2).encode(), "Update games list")
+    st.cache_data.clear()
+
+
+@st.cache_data(show_spinner="Loading game data...")
+def read_xml(xml_file):
+    data = store.read(f"xml/{xml_file}")
+    if data is None:
+        raise FileNotFoundError(f"xml/{xml_file} is missing from storage")
+    return data
+
+
+@st.cache_data(show_spinner=False)
+def read_logo(name):
+    return store.read(f"opponents/{name}")
 
 
 def xml_bytes_for(game):
-    return (XML_DIR / game["xml_file"]).read_bytes()
+    return read_xml(game["xml_file"])
 
 
 def match_ctx(game):
@@ -109,19 +154,26 @@ def match_ctx(game):
     }
 
 
+CACHE_VERSION = 2  # bump when charts.py parsing changes
+
+
 @st.cache_data(show_spinner=False)
-def parse_cached(xml_bytes, codes_json):
+def parse_cached(xml_bytes, codes_json, _v=CACHE_VERSION):
     return charts.parse_match(xml_bytes, json.loads(codes_json))
 
 
 @st.cache_data(show_spinner="Rendering charts...")
-def render_cached(xml_bytes, codes_json, ctx_json):
+def render_cached(xml_bytes, codes_json, ctx_json, _v=CACHE_VERSION):
     m = parse_cached(xml_bytes, codes_json)
     return charts.render_all(m, json.loads(ctx_json))
 
 
 def parsed(game):
     return parse_cached(xml_bytes_for(game), json.dumps(game["codes"], sort_keys=True))
+
+
+def pct(a, b):
+    return round(100 * a / b, 1) if b else 0.0
 
 
 def score_of(m):
@@ -137,10 +189,17 @@ def game_label(game):
 # ============================================================
 # LOGOS + HTML COMPONENTS
 # ============================================================
+MIME_BY_EXT = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+               ".webp": "image/webp", ".svg": "image/svg+xml"}
+
+
+def bytes_uri(data, suffix):
+    mime = MIME_BY_EXT.get(suffix.lower(), "image/png")
+    return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+
+
 def b64_uri(path):
-    mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-            ".webp": "image/webp", ".svg": "image/svg+xml"}.get(path.suffix.lower(), "image/png")
-    return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode()}"
+    return bytes_uri(path.read_bytes(), path.suffix)
 
 
 def club_logo_uri():
@@ -154,9 +213,10 @@ def club_logo_uri():
 
 def opp_logo_uri(game):
     f = game.get("opp_logo")
-    if f and (OPP_LOGO_DIR / f).exists():
-        return b64_uri(OPP_LOGO_DIR / f)
-    return None
+    if not f:
+        return None
+    data = read_logo(f)
+    return bytes_uri(data, Path(f).suffix) if data else None
 
 
 def crest_html(uri, fallback_text):
@@ -191,19 +251,27 @@ def stats_card_html(game, summ):
         ("Shot accuracy", acc(t), acc(o), f"{acc(t)}%", f"{acc(o)}%"),
         ("Penalty box entries", t["Penalty box entries"], o["Penalty box entries"], str(t["Penalty box entries"]), str(o["Penalty box entries"])),
         ("Final third entries", t["Final third entries"], o["Final third entries"], str(t["Final third entries"]), str(o["Final third entries"])),
+        ("Corners", t["Corners"], o["Corners"], str(t["Corners"]), str(o["Corners"])),
+        ("Offsides", t["Offsides"], o["Offsides"], str(t["Offsides"]), str(o["Offsides"])),
+        ("Crosses", t["Crosses"], o["Crosses"], str(t["Crosses"]), str(o["Crosses"])),
+        ("Successful crosses", t["Successful crosses"], o["Successful crosses"], str(t["Successful crosses"]), str(o["Successful crosses"])),
+        ("Cross accuracy", pct(t["Successful crosses"], t["Crosses"]), pct(o["Successful crosses"], o["Crosses"]),
+         f'{pct(t["Successful crosses"], t["Crosses"]):.0f}%', f'{pct(o["Successful crosses"], o["Crosses"]):.0f}%'),
     ]
+    lower_is_better = {"Offsides"}
     out = [f'<div class="stats-card"><div class="stats-head"><span class="l">{TEAM_SHORT}</span>'
            f'<span class="r">{html.escape(game["opponent"]).upper()}</span></div>']
     for label, tv, ov, td, od in rows:
-        lcls = "stat-val left" + (" pill-t" if tv > ov else "")
-        rcls = "stat-val right" + (" pill-o" if ov > tv else "")
+        t_wins, o_wins = (tv < ov, ov < tv) if label in lower_is_better else (tv > ov, ov > tv)
+        lcls = "stat-val left" + (" pill-t" if t_wins else "")
+        rcls = "stat-val right" + (" pill-o" if o_wins else "")
         total = tv + ov
-        pct = 100 * tv / total if total else 50
+        share = 100 * tv / total if total else 50
         out.append(
             '<div class="stat-row"><div class="stat-line">'
             f'<span class="{lcls}">{td}</span><span class="stat-label">{label}</span><span class="{rcls}">{od}</span>'
-            f'</div><div class="split"><div class="split-t" style="width:{pct:.1f}%"></div>'
-            f'<div class="split-o" style="width:{100 - pct:.1f}%"></div></div></div>'
+            f'</div><div class="split"><div class="split-t" style="width:{share:.1f}%"></div>'
+            f'<div class="split-o" style="width:{100 - share:.1f}%"></div></div></div>'
         )
     out.append("</div>")
     return "".join(out)
@@ -271,19 +339,40 @@ def page_match_centre():
             st.dataframe(gdf, width="stretch", hide_index=True)
         else:
             st.write("No goals detected.")
+        with st.expander("Codes found in this XML (use these exact names in the code settings)"):
+            st.dataframe(pd.DataFrame(sorted(m["codes_found"].items(), key=lambda kv: -kv[1]),
+                                      columns=["Code", "Count"]), hide_index=True, width="stretch")
         zt, tt = m["zones"]["team"]
         zo, to = m["zones"]["opp"]
         st.subheader("Final third entries by channel")
         st.dataframe(pd.DataFrame({f"{TEAM_SHORT} ({tt})": zt, f"{game['opponent']} ({to})": zo}),
                      width="stretch")
 
+    with st.expander("Edit Sportscode code names for this game"):
+        new_codes = {}
+        ccols = st.columns(2)
+        for i, (k, v) in enumerate(charts.DEFAULT_CODES.items()):
+            new_codes[k] = ccols[i % 2].text_input(k, value=game["codes"].get(k, v), key=f"code_{k}_{game['id']}")
+        if st.button("Save code names", key=f"save_codes_{game['id']}"):
+            all_games = load_games()
+            for g in all_games:
+                if g["id"] == game["id"]:
+                    g["codes"] = new_codes
+            save_games(all_games)
+            st.cache_data.clear()
+            st.rerun()
+
     with st.expander("Delete this game"):
         if st.checkbox("Yes, delete this game permanently", key=f"del_chk_{game['id']}"):
             if st.button("Delete", type="primary", key=f"del_btn_{game['id']}"):
-                (XML_DIR / game["xml_file"]).unlink(missing_ok=True)
-                if game.get("opp_logo"):
-                    (OPP_LOGO_DIR / game["opp_logo"]).unlink(missing_ok=True)
-                save_games([g for g in load_games() if g["id"] != game["id"]])
+                try:
+                    save_games([g for g in load_games() if g["id"] != game["id"]])
+                    store.delete(f"xml/{game['xml_file']}", f"Delete game vs {game['opponent']}")
+                    if game.get("opp_logo"):
+                        store.delete(f"opponents/{game['opp_logo']}", f"Delete crest vs {game['opponent']}")
+                except storage.StorageError as e:
+                    st.error(str(e))
+                    st.stop()
                 st.cache_data.clear()
                 st.rerun()
 
@@ -303,11 +392,12 @@ def page_season():
         st.warning("Select at least one game.")
         return
 
-    rows, matches = [], []
+    rows, matches, summs = [], [], []
     for g in chosen:
         m = parsed(g)
         matches.append(m)
         s = charts.summarize(m)
+        summs.append((g, s))
         rows.append({
             "Date": g["date"], "Opponent": g["opponent"], "Competition": g.get("competition", ""),
             "GF": s["team"]["Goals"], "GA": s["opp"]["Goals"],
@@ -315,6 +405,8 @@ def page_season():
             "SOT": s["team"]["Shots on target"], "SOT Agst": s["opp"]["Shots on target"],
             "PB Entries": s["team"]["Penalty box entries"], "PB Agst": s["opp"]["Penalty box entries"],
             "F3 Entries": s["team"]["Final third entries"], "F3 Agst": s["opp"]["Final third entries"],
+            "Corners": s["team"]["Corners"], "Offsides": s["team"]["Offsides"],
+            "Crosses": s["team"]["Crosses"], "Succ. Crosses": s["team"]["Successful crosses"],
         })
     df = pd.DataFrame(rows)
 
@@ -329,6 +421,38 @@ def page_season():
     c[4].metric("F3 entries per game", f"{df['F3 Entries'].mean():.1f}", delta=f"{df['F3 Entries'].mean() - df['F3 Agst'].mean():+.1f} vs opp")
 
     st.dataframe(df, width="stretch", hide_index=True)
+
+    # ---- percentages ----
+    st.subheader("Percentages")
+    tot = {side: {k: sum(s[side][k] for _, s in summs) for k in summs[0][1][side]} for side in ("team", "opp")}
+
+    def three(side):
+        x = tot[side]
+        return (pct(x["Successful crosses"], x["Crosses"]),
+                pct(x["Shots on target"], x["Total shots"]),
+                pct(x["Penalty box entries"], x["Final third entries"]))
+
+    tc, ts, tp = three("team")
+    oc, os_, op = three("opp")
+    p1, p2, p3 = st.columns(3)
+    p1.metric("Cross accuracy %", f"{tc:.1f}%", delta=f"{tc - oc:+.1f} pts vs opp")
+    p2.metric("Shot accuracy %", f"{ts:.1f}%", delta=f"{ts - os_:+.1f} pts vs opp")
+    p3.metric("Penalty box entry %", f"{tp:.1f}%", delta=f"{tp - op:+.1f} pts vs opp")
+    st.caption("Cross accuracy = successful crosses / crosses. Shot accuracy = shots on target (incl. goals) / total shots. "
+               "Penalty box entry % = penalty box entries / final third entries. Season figures use totals across the "
+               "selected games, not an average of each game's percentage.")
+
+    pdf = pd.DataFrame([{
+        "Game": f"{g['date']} {g['opponent']}",
+        "Cross %": pct(s["team"]["Successful crosses"], s["team"]["Crosses"]),
+        "Shot %": pct(s["team"]["Shots on target"], s["team"]["Total shots"]),
+        "PB entry %": pct(s["team"]["Penalty box entries"], s["team"]["Final third entries"]),
+        "Opp Cross %": pct(s["opp"]["Successful crosses"], s["opp"]["Crosses"]),
+        "Opp Shot %": pct(s["opp"]["Shots on target"], s["opp"]["Total shots"]),
+        "Opp PB entry %": pct(s["opp"]["Penalty box entries"], s["opp"]["Final third entries"]),
+    } for g, s in summs])
+    st.bar_chart(pdf.set_index("Game")[["Cross %", "Shot %", "PB entry %"]], color=[charts.GOLD, charts.BLUE_GREY, charts.GREEN])
+    st.dataframe(pdf, width="stretch", hide_index=True)
 
     st.subheader("Aggregated 15-minute windows (all selected games)")
     agg = charts.aggregate(matches)
@@ -377,6 +501,25 @@ def page_add_game():
 
         submitted = st.form_submit_button("Save game", type="primary")
 
+    with st.expander("Backup & restore"):
+        st.write("Your games are stored in " + ("a private GitHub repo." if store.name == "github"
+                 else "the `data` folder next to `app.py`.") + " A zip backup is still a good safety copy.")
+        if st.button("Prepare backup zip", key="prep_backup"):
+            with st.spinner("Collecting files..."):
+                st.session_state["backup_zip"] = storage.build_backup_zip(store)
+        if st.session_state.get("backup_zip"):
+            st.download_button("Download backup (zip)", st.session_state["backup_zip"],
+                               file_name="afcw_dashboard_backup.zip", mime="application/zip")
+        restore_file = st.file_uploader("Restore games from a backup zip", type=["zip"], key="restore_zip")
+        if restore_file is not None and st.button("Restore games from this zip", key="restore_btn"):
+            try:
+                with st.spinner("Restoring..."):
+                    added, skipped = storage.restore_backup_zip(store, restore_file.getvalue())
+                st.cache_data.clear()
+                st.success(f"Restored {added} game(s)." + (f" {skipped} skipped (XML missing from the zip)." if skipped else ""))
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Couldn't restore: {e}")
+
     if not submitted:
         return
     if not opponent.strip() or xml_file is None:
@@ -401,19 +544,24 @@ def page_add_game():
 
     game_id = uuid.uuid4().hex[:8]
     fname = f"{game_id}.xml"
-    (XML_DIR / fname).write_bytes(xml_bytes)
-    games = load_games()
-    games.append({
+    game_rec = {
         "id": game_id, "date": match_date.isoformat(), "opponent": opponent.strip(),
         "competition": competition, "venue": venue, "age_group": age_group.strip() or AGE_GROUP_DEFAULT,
         "notes": notes.strip(), "xml_file": fname, "codes": codes,
-    })
-    if opp_logo_file is not None:
-        logo_name = f"{game_id}{Path(opp_logo_file.name).suffix.lower()}"
-        (OPP_LOGO_DIR / logo_name).write_bytes(opp_logo_file.getvalue())
-        games[-1]["opp_logo"] = logo_name
-    save_games(games)
-    st.cache_data.clear()
+    }
+    try:
+        with st.spinner("Saving..."):
+            store.write(f"xml/{fname}", xml_bytes, f"Add game vs {opponent.strip()}")
+            if opp_logo_file is not None:
+                logo_name = f"{game_id}{Path(opp_logo_file.name).suffix.lower()}"
+                store.write(f"opponents/{logo_name}", opp_logo_file.getvalue(), f"Add crest vs {opponent.strip()}")
+                game_rec["opp_logo"] = logo_name
+            games = load_games()
+            games.append(game_rec)
+            save_games(games)  # games.json is written last, so a failure never leaves a half-added game listed
+    except storage.StorageError as e:
+        st.error(f"Couldn't save the game: {e}")
+        return
 
     gf, ga = summ["team"]["Goals"], summ["opp"]["Goals"]
     st.success(f"Saved: {CLUB} {gf}-{ga} {opponent.strip()}. Open **Match Centre** to see the charts.")
@@ -427,10 +575,52 @@ def page_add_game():
 # ============================================================
 # ROUTER
 # ============================================================
+def require_password():
+    try:
+        pw = st.secrets["app_password"]
+    except Exception:  # noqa: BLE001
+        return
+    if st.session_state.get("authed"):
+        return
+    st.title(f"{CLUB} Match Dashboard")
+    entered = st.text_input("Password", type="password")
+    if entered:
+        if hmac.compare_digest(entered.encode(), str(pw).encode()):
+            st.session_state["authed"] = True
+            st.rerun()
+        st.error("Wrong password.")
+    st.stop()
+
+
+require_password()
+
+_ok, _msg = storage_status()
+if not _ok:
+    st.error(_msg)
+    st.stop()
+if _msg.startswith("WARNING"):
+    st.warning(_msg)
+
 _logo = club_logo_uri()
 if _logo:
     st.sidebar.markdown(f'<img src="{_logo}" style="width:90px;margin-bottom:.5rem">', unsafe_allow_html=True)
 st.sidebar.title(CLUB)
-st.sidebar.caption(f"{AGE_GROUP_DEFAULT} match analysis")
-page = st.sidebar.radio("Navigate", ["Match Centre", "Season Overview", "Add Game"], label_visibility="collapsed")
-{"Match Centre": page_match_centre, "Season Overview": page_season, "Add Game": page_add_game}[page]()
+st.sidebar.caption(f"{AGE_GROUP_DEFAULT} match analysis  |  Storage: {store.label}")
+PAGES = {"Match Centre": page_match_centre, "Season Overview": page_season, "Add Game": page_add_game}
+if "page" not in st.session_state:
+    st.session_state.page = "Match Centre"
+
+
+def go_to(name):
+    st.session_state.page = name
+
+
+st.sidebar.write("")
+for name in PAGES:
+    st.sidebar.button(name, key=f"nav_{name}", on_click=go_to, args=(name,), width="stretch",
+                      type="primary" if st.session_state.page == name else "secondary")
+
+try:
+    PAGES[st.session_state.page]()
+except storage.StorageError as e:
+    st.error(str(e))
