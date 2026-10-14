@@ -40,12 +40,14 @@ DEFAULT_CODES = {
     "opp_goal": "OPP GOAL",
     "team_offside": "OFFSIDE",
     "opp_offside": "OPP OFFSIDE",
-    "team_corner": "CORNER",
-    "opp_corner": "OPP CORNER",
+    "team_corner": "ATT CORNER",
+    "opp_corner": "DEF CORNER",
     "team_cross": "CROSS",
     "opp_cross": "OPP CROSS",
     "team_cross_success": "SUCCESSFUL CROSS",
     "opp_cross_success": "OPP SUCCESSFUL CROSS",
+    "cross_label_group": "CROSSES",
+    "cross_success_text": "SUCCESSFUL",
     "kickoff": "KICK-OFF",
     "label_group": "FINAL 3RD ENTRIES",
 }
@@ -100,6 +102,21 @@ def _parse_zone_entries(instances, entry_code, label_group):
             if z in texts:
                 zone_counts[z] += 1
     return zone_counts, total
+
+
+def _count_labelled(instances, code, group, text):
+    """Counts instances of `code` that carry a label (group, text). An instance counts once."""
+    n = 0
+    for inst in instances:
+        c = inst.find("code")
+        if c is None or c.text != code:
+            continue
+        for lab in inst.findall("label"):
+            g, t = lab.find("group"), lab.find("text")
+            if g is not None and t is not None and g.text == group and t.text == text:
+                n += 1
+                break
+    return n
 
 
 def _find_halftime_gap(rows):
@@ -215,6 +232,12 @@ def parse_match(xml_bytes, codes=None):
             m["shots"][side][outcome][b] += 1
             if outcome == "Goal":
                 m["goals"].append({"side": side, "minute": round(minute, 1), "bucket": b})
+
+    # Successful crosses: a label on the cross instance (e.g. CROSSES > SUCCESSFUL),
+    # on top of any separate "successful cross" code if you use one.
+    for side, cross_code in (("team", codes["team_cross"]), ("opp", codes["opp_cross"])):
+        m["extras"][side]["Successful crosses"] += _count_labelled(
+            instances, cross_code, codes["cross_label_group"], codes["cross_success_text"])
 
     m["goals"].sort(key=lambda g: g["minute"])
     m["zones"] = {
