@@ -2,3 +2,4 @@ streamlit>=1.50
 matplotlib
 mplsoccer
 pandas
+requests
