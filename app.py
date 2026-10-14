@@ -143,6 +143,18 @@ def xml_bytes_for(game):
     return read_xml(game["xml_file"])
 
 
+OLD_DEFAULTS = {"team_corner": "CORNER", "opp_corner": "OPP CORNER"}  # earlier guesses, since corrected
+
+
+def codes_for(game):
+    """The game's saved code names, filled in with defaults and with stale guesses upgraded."""
+    codes = {**charts.DEFAULT_CODES, **game.get("codes", {})}
+    for k, old in OLD_DEFAULTS.items():
+        if codes.get(k) == old:
+            codes[k] = charts.DEFAULT_CODES[k]
+    return codes
+
+
 def match_ctx(game):
     age = game.get("age_group", AGE_GROUP_DEFAULT)
     return {
@@ -169,7 +181,7 @@ def render_cached(xml_bytes, codes_json, ctx_json, _v=CACHE_VERSION):
 
 
 def parsed(game):
-    return parse_cached(xml_bytes_for(game), json.dumps(game["codes"], sort_keys=True))
+    return parse_cached(xml_bytes_for(game), json.dumps(codes_for(game), sort_keys=True))
 
 
 def pct(a, b):
@@ -305,7 +317,7 @@ def page_match_centre():
     st.write("")
 
     ctx = match_ctx(game)
-    pngs = render_cached(xml_bytes_for(game), json.dumps(game["codes"], sort_keys=True), json.dumps(ctx))
+    pngs = render_cached(xml_bytes_for(game), json.dumps(codes_for(game), sort_keys=True), json.dumps(ctx))
 
     def show(name, key):
         st.image(pngs[name], width="stretch")
@@ -352,7 +364,7 @@ def page_match_centre():
         new_codes = {}
         ccols = st.columns(2)
         for i, (k, v) in enumerate(charts.DEFAULT_CODES.items()):
-            new_codes[k] = ccols[i % 2].text_input(k, value=game["codes"].get(k, v), key=f"code_{k}_{game['id']}")
+            new_codes[k] = ccols[i % 2].text_input(k, value=codes_for(game).get(k, v), key=f"code_{k}_{game['id']}")
         if st.button("Save code names", key=f"save_codes_{game['id']}"):
             all_games = load_games()
             for g in all_games:
