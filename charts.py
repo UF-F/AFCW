@@ -38,6 +38,14 @@ DEFAULT_CODES = {
     "opp_shot_blocked": "OPP SHOT BLOCKED",
     "team_goal": "GOAL",
     "opp_goal": "OPP GOAL",
+    "team_offside": "OFFSIDE",
+    "opp_offside": "OPP OFFSIDE",
+    "team_corner": "CORNER",
+    "opp_corner": "OPP CORNER",
+    "team_cross": "CROSS",
+    "opp_cross": "OPP CROSS",
+    "team_cross_success": "SUCCESSFUL CROSS",
+    "opp_cross_success": "OPP SUCCESSFUL CROSS",
     "kickoff": "KICK-OFF",
     "label_group": "FINAL 3RD ENTRIES",
 }
@@ -162,6 +170,8 @@ def parse_match(xml_bytes, codes=None):
             "opp": {o: zeros() for o in OUTCOME_ORDER},
         },
         "goals": [],
+        "extras": {s_: {"Offsides": 0, "Corners": 0, "Crosses": 0, "Successful crosses": 0}
+                   for s_ in ("team", "opp")},
         "halftime_found": halftime_found,
         "codes_found": {},
     }
@@ -177,6 +187,14 @@ def parse_match(xml_bytes, codes=None):
         codes["opp_goal"]: ("opp", "Goal"),
     }
 
+    extras_map = {
+        codes["team_offside"]: ("team", "Offsides"), codes["opp_offside"]: ("opp", "Offsides"),
+        codes["team_corner"]: ("team", "Corners"), codes["opp_corner"]: ("opp", "Corners"),
+        codes["team_cross"]: ("team", "Crosses"), codes["opp_cross"]: ("opp", "Crosses"),
+        codes["team_cross_success"]: ("team", "Successful crosses"),
+        codes["opp_cross_success"]: ("opp", "Successful crosses"),
+    }
+
     for start, _, code in rows:
         m["codes_found"][code] = m["codes_found"].get(code, 0) + 1
         minute = to_minute(start)
@@ -189,6 +207,9 @@ def parse_match(xml_bytes, codes=None):
             m["f3"]["team"][b] += 1
         elif code == codes["opp_f3"]:
             m["f3"]["opp"][b] += 1
+        elif code in extras_map:
+            side, stat = extras_map[code]
+            m["extras"][side][stat] += 1
         elif code in shot_map:
             side, outcome = shot_map[code]
             m["shots"][side][outcome][b] += 1
@@ -219,6 +240,7 @@ def summarize(m):
             "Shots blocked": blocked,
             "Penalty box entries": tot(m["pb"][side]),
             "Final third entries": tot(m["f3"][side]),
+            **m.get("extras", {}).get(side, {"Offsides": 0, "Corners": 0, "Crosses": 0, "Successful crosses": 0}),
         }
     return out
 
