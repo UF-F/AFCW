@@ -143,6 +143,16 @@ def xml_bytes_for(game):
     return read_xml(game["xml_file"])
 
 
+def is_admin():
+    """Editing is open to everyone unless an `admin_password` secret is set.
+    With it set, only people who log in as admin can add/delete games or edit code names."""
+    try:
+        st.secrets["admin_password"]
+    except Exception:  # noqa: BLE001
+        return True
+    return bool(st.session_state.get("is_admin"))
+
+
 OLD_DEFAULTS = {"team_corner": "CORNER", "opp_corner": "OPP CORNER"}  # earlier guesses, since corrected
 
 
@@ -360,33 +370,34 @@ def page_match_centre():
         st.dataframe(pd.DataFrame({f"{TEAM_SHORT} ({tt})": zt, f"{game['opponent']} ({to})": zo}),
                      width="stretch")
 
-    with st.expander("Edit Sportscode code names for this game"):
-        new_codes = {}
-        ccols = st.columns(2)
-        for i, (k, v) in enumerate(charts.DEFAULT_CODES.items()):
-            new_codes[k] = ccols[i % 2].text_input(k, value=codes_for(game).get(k, v), key=f"code_{k}_{game['id']}")
-        if st.button("Save code names", key=f"save_codes_{game['id']}"):
-            all_games = load_games()
-            for g in all_games:
-                if g["id"] == game["id"]:
-                    g["codes"] = new_codes
-            save_games(all_games)
-            st.cache_data.clear()
-            st.rerun()
-
-    with st.expander("Delete this game"):
-        if st.checkbox("Yes, delete this game permanently", key=f"del_chk_{game['id']}"):
-            if st.button("Delete", type="primary", key=f"del_btn_{game['id']}"):
-                try:
-                    save_games([g for g in load_games() if g["id"] != game["id"]])
-                    store.delete(f"xml/{game['xml_file']}", f"Delete game vs {game['opponent']}")
-                    if game.get("opp_logo"):
-                        store.delete(f"opponents/{game['opp_logo']}", f"Delete crest vs {game['opponent']}")
-                except storage.StorageError as e:
-                    st.error(str(e))
-                    st.stop()
+    if is_admin():
+        with st.expander("Edit Sportscode code names for this game"):
+            new_codes = {}
+            ccols = st.columns(2)
+            for i, (k, v) in enumerate(charts.DEFAULT_CODES.items()):
+                new_codes[k] = ccols[i % 2].text_input(k, value=codes_for(game).get(k, v), key=f"code_{k}_{game['id']}")
+            if st.button("Save code names", key=f"save_codes_{game['id']}"):
+                all_games = load_games()
+                for g in all_games:
+                    if g["id"] == game["id"]:
+                        g["codes"] = new_codes
+                save_games(all_games)
                 st.cache_data.clear()
                 st.rerun()
+
+        with st.expander("Delete this game"):
+            if st.checkbox("Yes, delete this game permanently", key=f"del_chk_{game['id']}"):
+                if st.button("Delete", type="primary", key=f"del_btn_{game['id']}"):
+                    try:
+                        save_games([g for g in load_games() if g["id"] != game["id"]])
+                        store.delete(f"xml/{game['xml_file']}", f"Delete game vs {game['opponent']}")
+                        if game.get("opp_logo"):
+                            store.delete(f"opponents/{game['opp_logo']}", f"Delete crest vs {game['opponent']}")
+                    except storage.StorageError as e:
+                        st.error(str(e))
+                        st.stop()
+                    st.cache_data.clear()
+                    st.rerun()
 
 
 # ============================================================
@@ -521,6 +532,9 @@ def page_season():
 # PAGE: ADD GAME
 # ============================================================
 def page_add_game():
+    if not is_admin():
+        st.warning("Only the admin can add games.")
+        return
     st.title("Add Game")
     st.write("Upload the Sportscode XML export and fill in the match details.")
 
@@ -649,8 +663,9 @@ if _logo:
     st.sidebar.markdown(f'<img src="{_logo}" style="width:90px;margin-bottom:.5rem">', unsafe_allow_html=True)
 st.sidebar.title(CLUB)
 st.sidebar.caption(f"{AGE_GROUP_DEFAULT} match analysis  |  Storage: {store.label}")
-PAGES = {"Match Centre": page_match_centre, "Season Overview": page_season, "Add Game": page_add_game}
-if "page" not in st.session_state:
+ALL_PAGES = {"Match Centre": page_match_centre, "Season Overview": page_season, "Add Game": page_add_game}
+PAGES = ALL_PAGES if is_admin() else {k: v for k, v in ALL_PAGES.items() if k != "Add Game"}
+if st.session_state.get("page") not in PAGES:
     st.session_state.page = "Match Centre"
 
 
@@ -662,6 +677,30 @@ st.sidebar.write("")
 for name in PAGES:
     st.sidebar.button(name, key=f"nav_{name}", on_click=go_to, args=(name,), width="stretch",
                       type="primary" if st.session_state.page == name else "secondary")
+
+def admin_login_box():
+    try:
+        admin_pw = st.secrets["admin_password"]
+    except Exception:  # noqa: BLE001
+        return
+    if st.session_state.get("is_admin"):
+        st.sidebar.write("")
+        if st.sidebar.button("Log out of admin", key="admin_logout"):
+            st.session_state["is_admin"] = False
+            st.session_state["page"] = "Match Centre"
+            st.rerun()
+        return
+    st.sidebar.write("")
+    with st.sidebar.expander("Admin login"):
+        entered = st.text_input("Admin password", type="password", key="admin_pw_input")
+        if entered:
+            if hmac.compare_digest(entered.encode(), str(admin_pw).encode()):
+                st.session_state["is_admin"] = True
+                st.rerun()
+            st.error("Wrong password.")
+
+
+admin_login_box()
 
 try:
     PAGES[st.session_state.page]()
