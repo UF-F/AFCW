@@ -147,8 +147,10 @@ def is_admin():
     """Editing is open to everyone unless an `admin_password` secret is set.
     With it set, only people who log in as admin can add/delete games or edit code names."""
     try:
-        st.secrets["admin_password"]
+        configured = bool(st.secrets["admin_password"])  # assigned, NOT a bare expression (Streamlit would print it)
     except Exception:  # noqa: BLE001
+        return True
+    if not configured:
         return True
     return bool(st.session_state.get("is_admin"))
 
