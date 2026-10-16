@@ -497,6 +497,53 @@ def make_infographic(zone_counts, total_count, ctx, *, reversed_orientation,
 
 
 # ============================================================
+# CHART - one stat, game by game (season view)
+# ============================================================
+def make_game_metric_chart(labels, team_vals, opp_vals, metric, is_pct, ctx,
+                           show_opp=True, avg_team=None, avg_opp=None):
+    n = len(labels)
+    fig, ax = plt.subplots(figsize=(max(10, 1.15 * n + 3), 5.8), facecolor=NAVY)
+    ax.set_facecolor(NAVY)
+    x = list(range(n))
+    width = 0.38 if show_opp else 0.55
+    off = width / 2 if show_opp else 0
+    fmt = (lambda v: f"{v:.0f}%") if is_pct else (lambda v: f"{v:g}")
+
+    bars = [(ax.bar([i - off for i in x], team_vals, width=width, color=GOLD,
+                    label=ctx["team_short"], zorder=3), team_vals)]
+    if show_opp:
+        bars.append((ax.bar([i + off for i in x], opp_vals, width=width, color=BLUE_GREY,
+                            label="Opposition", zorder=3), opp_vals))
+    shown = list(team_vals) + (list(opp_vals) if show_opp else [])
+    top = max(shown + [1])
+    for group, vals in bars:
+        for rect, v in zip(group, vals):
+            ax.text(rect.get_x() + rect.get_width() / 2, v + top * 0.015, fmt(v),
+                    ha="center", va="bottom", color="white", fontsize=9, fontweight="bold")
+
+    if avg_team is not None:
+        ax.axhline(avg_team, color=GOLD, linestyle="--", linewidth=1.3, alpha=0.8, zorder=2,
+                   label=f"{ctx['team_short']} season: {fmt(avg_team)}")
+    if show_opp and avg_opp is not None:
+        ax.axhline(avg_opp, color=BLUE_GREY, linestyle="--", linewidth=1.3, alpha=0.8, zorder=2,
+                   label=f"Opposition season: {fmt(avg_opp)}")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, color="white", fontsize=9)
+    ax.tick_params(axis="y", colors="white")
+    if is_pct:
+        ax.yaxis.set_major_formatter(lambda v, _: f"{v:.0f}%")
+    ax.spines[:].set_color("white")
+    ax.grid(axis="y", color="white", alpha=0.15, zorder=0)
+    ax.set_ylim(0, top * 1.22)
+    ax.set_title(f"{metric} by game", color="white", fontsize=16, fontweight="bold", pad=14)
+    ax.legend(loc="upper left", ncol=2, facecolor=NAVY, edgecolor="white", labelcolor="white", fontsize=9)
+    fig.text(0.99, 0.01, ctx["credit"], color="white", fontsize=8, ha="right", va="bottom", alpha=0.6)
+    fig.tight_layout()
+    return fig
+
+
+# ============================================================
 # RENDER EVERYTHING -> PNG BYTES
 # ============================================================
 def fig_to_png(fig, tight=True):
