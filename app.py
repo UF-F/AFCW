@@ -463,7 +463,38 @@ def page_season():
         "Opp Shot %": pct(s["opp"]["Shots on target"], s["opp"]["Total shots"]),
         "Opp PB entry %": pct(s["opp"]["Penalty box entries"], s["opp"]["Final third entries"]),
     } for g, s in summs])
-    st.bar_chart(pdf.set_index("Game")[["Cross %", "Shot %", "PB entry %"]], color=[charts.GOLD, charts.BLUE_GREY, charts.GREEN])
+
+    # ---- one stat, game by game ----
+    metrics = {}
+    for stat in ["Goals", "Total shots", "Shots on target", "Shots off target", "Shots blocked",
+                 "Penalty box entries", "Final third entries", "Corners", "Offsides",
+                 "Crosses", "Successful crosses"]:
+        metrics[stat] = ([s["team"][stat] for _, s in summs], [s["opp"][stat] for _, s in summs], False,
+                         round(sum(s["team"][stat] for _, s in summs) / len(summs), 1),
+                         round(sum(s["opp"][stat] for _, s in summs) / len(summs), 1))
+    metrics["Cross accuracy %"] = ([pct(s["team"]["Successful crosses"], s["team"]["Crosses"]) for _, s in summs],
+                                   [pct(s["opp"]["Successful crosses"], s["opp"]["Crosses"]) for _, s in summs], True, tc, oc)
+    metrics["Shot accuracy %"] = ([pct(s["team"]["Shots on target"], s["team"]["Total shots"]) for _, s in summs],
+                                  [pct(s["opp"]["Shots on target"], s["opp"]["Total shots"]) for _, s in summs], True, ts, os_)
+    metrics["Penalty box entry %"] = ([pct(s["team"]["Penalty box entries"], s["team"]["Final third entries"]) for _, s in summs],
+                                      [pct(s["opp"]["Penalty box entries"], s["opp"]["Final third entries"]) for _, s in summs], True, tp, op)
+
+    st.subheader("Game by game")
+    cc1, cc2 = st.columns([3, 1])
+    pick = cc1.selectbox("Choose a stat", list(metrics), index=list(metrics).index("Cross accuracy %"))
+    with_opp = cc2.checkbox("Show opposition", value=True)
+    tv, ov, is_pct, avg_t, avg_o = metrics[pick]
+    short = []
+    for g, _ in summs:
+        d = date.fromisoformat(g["date"]).strftime("%d %b")
+        opp = g["opponent"] if len(g["opponent"]) <= 14 else g["opponent"][:13] + "."
+        short.append(f"{d}\n{opp}")
+    gpng = charts.fig_to_png(charts.make_game_metric_chart(
+        short, tv, ov, pick, is_pct,
+        {"credit": CREDIT, "team_short": TEAM_SHORT}, show_opp=with_opp, avg_team=avg_t, avg_opp=avg_o))
+    st.image(gpng, width="stretch")
+    st.download_button("Download PNG", gpng, file_name=f"season_{pick.replace(' ', '_').replace('%', 'pct')}.png",
+                       mime="image/png", key="dl_game_metric")
     st.dataframe(pdf, width="stretch", hide_index=True)
 
     st.subheader("Aggregated 15-minute windows (all selected games)")
